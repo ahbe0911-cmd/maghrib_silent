@@ -103,7 +103,8 @@ object PrayerScheduler {
             .commit()
 
         return try {
-            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+            audio.ringerMode = AudioManager.RINGER_MODE_VIBRATE
             true
         } catch (_: SecurityException) {
             false
@@ -174,7 +175,8 @@ object PrayerScheduler {
             .putBoolean("testActive", true)
             .commit()
         try {
-            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+            audio.ringerMode = AudioManager.RINGER_MODE_VIBRATE
         } catch (_: Exception) {
             prefs.edit().putBoolean("testActive", false).commit()
             return false
