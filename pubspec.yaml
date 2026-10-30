@@ -9,5 +9,6 @@ dependencies:
     sdk: flutter
   adhan: ^2.0.0
   shared_preferences: ^2.3.2
+  geolocator: ^13.0.2
 flutter:
   uses-material-design: true
