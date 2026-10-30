@@ -11,11 +11,13 @@ import org.json.JSONArray
 
 object PrayerScheduler {
     private const val PREF = "maghrib_native"
-    private const val START = "com.example.maghrib_silent.START"
-    private const val END = "com.example.maghrib_silent.END"
+    const val START = "com.example.maghrib_silent.START"
+    const val END = "com.example.maghrib_silent.END"
+    const val TEST_END = "com.example.maghrib_silent.TEST_END"
     private const val HALF_HOUR = 30 * 60 * 1000L
     private const val START_ID = 1001
     private const val END_ID = 1002
+    private const val TEST_END_ID = 1003
 
     private fun pending(context: Context, action: String, id: Int) =
         PendingIntent.getBroadcast(
@@ -34,9 +36,15 @@ object PrayerScheduler {
     }
 
     private fun times(context: Context): List<Long> {
-        val raw = context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getString("times", "[]") ?: "[]"
+        val raw = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+            .getString("times", "[]") ?: "[]"
         val json = JSONArray(raw)
         return (0 until json.length()).map { json.getLong(it) }
+    }
+
+    private fun exactAlarmsAllowed(context: Context): Boolean {
+        val alarm = context.getSystemService(AlarmManager::class.java)
+        return Build.VERSION.SDK_INT < 31 || alarm.canScheduleExactAlarms()
     }
 
     fun arm(context: Context) {
@@ -44,14 +52,18 @@ object PrayerScheduler {
         val alarm = context.getSystemService(AlarmManager::class.java)
         alarm.cancel(pending(context, START, START_ID))
         alarm.cancel(pending(context, END, END_ID))
-
-        if (Build.VERSION.SDK_INT >= 31 && !alarm.canScheduleExactAlarms()) return
+        if (!exactAlarmsAllowed(context)) return
         val now = System.currentTimeMillis()
 
         if (prefs.getBoolean("active", false)) {
             val endAt = prefs.getLong("activeEnd", 0L)
-            if (endAt > now) alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, endAt, pending(context, END, END_ID))
-            else onEnd(context)
+            if (endAt > now) {
+                alarm.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP, endAt, pending(context, END, END_ID)
+                )
+            } else {
+                onEnd(context)
+            }
             return
         }
 
@@ -62,8 +74,65 @@ object PrayerScheduler {
         if (index >= queue.size) return
 
         val startAt = queue[index]
-        if (startAt > now) alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, startAt, pending(context, START, START_ID))
-        alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, startAt + HALF_HOUR, pending(context, END, END_ID))
+        if (startAt > now) {
+            alarm.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP, startAt, pending(context, START, START_ID)
+            )
+        } else {
+            // If the device was asleep or the app was force-stopped across Maghrib,
+            // do not start a stale silent period.
+            return
+        }
+        alarm.setExactAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP, startAt + HALF_HOUR, pending(context, END, END_ID)
+        )
+    }
+
+    private fun saveAndEnableDnd(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        val nm = context.getSystemService(NotificationManager::class.java)
+        val audio = context.getSystemService(AudioManager::class.java)
+        if (!nm.isNotificationPolicyAccessGranted) return false
+
+        // Snapshot both states before touching either one. commit() is intentional:
+        // a receiver can be killed immediately after returning.
+        prefs.edit()
+            .putInt("previousRinger", audio.ringerMode)
+            .putInt("previousFilter", nm.currentInterruptionFilter)
+            .putBoolean("active", true)
+            .commit()
+
+        return try {
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
+            true
+        } catch (_: SecurityException) {
+            false
+        } catch (_: RuntimeException) {
+            false
+        }
+    }
+
+    private fun restoreSavedState(context: Context, keyPrefix: String = "") {
+        val prefs = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        val nm = context.getSystemService(NotificationManager::class.java)
+        val audio = context.getSystemService(AudioManager::class.java)
+        val filter = prefs.getInt(keyPrefix + "previousFilter", NotificationManager.INTERRUPTION_FILTER_ALL)
+        val ringer = prefs.getInt(keyPrefix + "previousRinger", AudioManager.RINGER_MODE_NORMAL)
+
+        // Restore independently. On some Android 10/OEM builds one API may throw;
+        // that must never prevent attempting the other restore or clearing state.
+        if (nm.isNotificationPolicyAccessGranted) {
+            try {
+                nm.setInterruptionFilter(filter)
+            } catch (_: SecurityException) {
+            } catch (_: RuntimeException) {
+            }
+        }
+        try {
+            audio.ringerMode = ringer
+        } catch (_: SecurityException) {
+        } catch (_: RuntimeException) {
+        }
     }
 
     fun onStart(context: Context) {
@@ -72,37 +141,56 @@ object PrayerScheduler {
         val queue = times(context)
         val index = prefs.getInt("index", 0)
         if (index >= queue.size) return
-
-        val nm = context.getSystemService(NotificationManager::class.java)
-        val audio = context.getSystemService(AudioManager::class.java)
         val endAt = queue[index] + HALF_HOUR
-        prefs.edit()
-            .putInt("previousRinger", audio.ringerMode)
-            .putInt("previousFilter", nm.currentInterruptionFilter)
-            .putLong("activeEnd", endAt)
-            .putBoolean("active", true)
-            .commit()
-
-        if (nm.isNotificationPolicyAccessGranted) {
-            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
-        }
+        prefs.edit().putLong("activeEnd", endAt).commit()
+        saveAndEnableDnd(context)
         arm(context)
     }
 
     fun onEnd(context: Context) {
         val prefs = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
         if (prefs.getBoolean("active", false)) {
-            val nm = context.getSystemService(NotificationManager::class.java)
-            val audio = context.getSystemService(AudioManager::class.java)
-            if (nm.isNotificationPolicyAccessGranted) {
-                nm.setInterruptionFilter(prefs.getInt("previousFilter", NotificationManager.INTERRUPTION_FILTER_ALL))
-            }
-            try {
-                audio.ringerMode = prefs.getInt("previousRinger", AudioManager.RINGER_MODE_NORMAL)
-            } catch (_: SecurityException) { }
-            prefs.edit().putBoolean("active", false).remove("activeEnd").apply()
+            restoreSavedState(context)
+            prefs.edit().putBoolean("active", false).remove("activeEnd").commit()
         }
-        prefs.edit().putInt("index", prefs.getInt("index", 0) + 1).apply()
+        // Advance only once; duplicate END broadcasts cannot skip a future day.
+        val queue = times(context)
+        val index = prefs.getInt("index", 0)
+        if (index < queue.size && queue[index] + HALF_HOUR <= System.currentTimeMillis()) {
+            prefs.edit().putInt("index", index + 1).commit()
+        }
         arm(context)
+    }
+
+    fun testNow(context: Context): Boolean {
+        val nm = context.getSystemService(NotificationManager::class.java)
+        if (!nm.isNotificationPolicyAccessGranted) return false
+        val prefs = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        if (prefs.getBoolean("testActive", false)) return false
+        val audio = context.getSystemService(AudioManager::class.java)
+        prefs.edit()
+            .putInt("testPreviousRinger", audio.ringerMode)
+            .putInt("testPreviousFilter", nm.currentInterruptionFilter)
+            .putBoolean("testActive", true)
+            .commit()
+        try {
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
+        } catch (_: Exception) {
+            prefs.edit().putBoolean("testActive", false).commit()
+            return false
+        }
+        val alarm = context.getSystemService(AlarmManager::class.java)
+        val end = System.currentTimeMillis() + 30_000L
+        alarm.setExactAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP, end, pending(context, TEST_END, TEST_END_ID)
+        )
+        return true
+    }
+
+    fun endTest(context: Context) {
+        val prefs = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("testActive", false)) return
+        restoreSavedState(context, "test")
+        prefs.edit().putBoolean("testActive", false).commit()
     }
 }
