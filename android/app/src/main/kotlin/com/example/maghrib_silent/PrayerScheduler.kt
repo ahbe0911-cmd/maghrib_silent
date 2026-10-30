@@ -182,7 +182,7 @@ object PrayerScheduler {
             return false
         }
         val alarm = context.getSystemService(AlarmManager::class.java)
-        val end = System.currentTimeMillis() + 30_000L
+        val end = System.currentTimeMillis() + 15_000L
         alarm.setExactAndAllowWhileIdle(
             AlarmManager.RTC_WAKEUP, end, pending(context, TEST_END, TEST_END_ID)
         )
