@@ -11,7 +11,7 @@ class MaghribApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'Maghrib Silent',
-    theme: ThemeData(useMaterial3: true, colorSchemeSeed: const Color(0xff505b91)),
+    theme: ThemeData(useMaterial3: true, colorSchemeSeed: const Color(0xff505b91), fontFamily: 'FarNazanin'),
     home: const HomePage(),
   );
 }
@@ -366,7 +366,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 _permission('آلارم دقیق', 'exact'),
               ]),
               Text(status, textAlign: TextAlign.center, maxLines: 2,
-                overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
+                overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, fontFamily: 'ARooznameh')),
               if (!compact) const Spacer(),
               const Text('روش محاسبه تهران: مغرب ۴٫۵ درجه زیر افق',
                 textAlign: TextAlign.center, style: TextStyle(fontSize: 10)),
