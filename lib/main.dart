@@ -3,25 +3,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MaghribApp());
-}
+void main() => runApp(const MaghribApp());
 
 class MaghribApp extends StatelessWidget {
   const MaghribApp({super.key});
-
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'Maghrib Silent',
-        theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.indigo),
-        home: const HomePage(),
-      );
+    title: 'Maghrib Silent',
+    theme: ThemeData(useMaterial3: true, colorSchemeSeed: const Color(0xff505b91)),
+    home: const HomePage(),
+  );
 }
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
-
   @override
   State<HomePage> createState() => _HomePageState();
 }
@@ -32,9 +27,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final lat = TextEditingController(text: '37.2289');
   final lon = TextEditingController(text: '55.3725');
   DateTime? maghrib;
-  String status = 'Checking permissions...';
+  DateTime? sunset;
+  String status = 'در حال بررسی مجوزها...';
   Map<String, dynamic> permissions = {};
-  bool openingSettings = false;
+  bool busy = false;
 
   @override
   void initState() {
@@ -46,207 +42,160 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    city.dispose();
-    lat.dispose();
-    lon.dispose();
+    city.dispose(); lat.dispose(); lon.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _refresh();
+    if (state == AppLifecycleState.resumed) _checkPermissions();
   }
 
   Future<void> _initialize() async {
-    final prefs = await SharedPreferences.getInstance();
-    city.text = prefs.getString('city') ?? city.text;
-    lat.text = (prefs.getDouble('lat') ?? 37.2289).toString();
-    lon.text = (prefs.getDouble('lon') ?? 55.3725).toString();
-    await _refresh(prompt: true);
+    final p = await SharedPreferences.getInstance();
+    city.text = p.getString('city') ?? city.text;
+    lat.text = (p.getDouble('lat') ?? 37.2289).toString();
+    lon.text = (p.getDouble('lon') ?? 55.3725).toString();
+    await _checkPermissions(prompt: true);
+    await _calculateAndSchedule();
   }
 
-  Future<void> _refresh({bool prompt = false}) async {
+  Future<void> _checkPermissions({bool prompt = false}) async {
     try {
-      final p = Map<String, dynamic>.from(
-        await native.invokeMethod('permissions'),
-      );
+      final p = Map<String, dynamic>.from(await native.invokeMethod('permissions'));
       if (!mounted) return;
       setState(() => permissions = p);
-      if (prompt && !openingSettings) {
-        for (final entry in [
-          ('battery', 'openBattery'),
-          ('dnd', 'openDnd'),
-          ('exact', 'openExact'),
+      if (prompt) {
+        for (final item in [
+          ('battery', 'openBattery', 'بهینه‌سازی باتری'),
+          ('dnd', 'openDnd', 'دسترسی مزاحم نشوید'),
+          ('exact', 'openExact', 'هشدار دقیق'),
         ]) {
-          if (p[entry.$1] != true) {
-            openingSettings = true;
-            await _showPermissionDialog(entry.$1, entry.$2);
-            openingSettings = false;
+          if (p[item.$1] != true) {
+            if (!mounted) return;
+            await showDialog<void>(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: Text('فعال‌سازی ${item.$3}'),
+                content: const Text('برای اجرای خودکار برنامه، این دسترسی را در تنظیمات اندروید فعال کنید.'),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('بعداً')),
+                  FilledButton(onPressed: () async {
+                    Navigator.pop(ctx);
+                    await native.invokeMethod(item.$2);
+                  }, child: const Text('باز کردن تنظیمات')),
+                ],
+              ),
+            );
             break;
           }
         }
       }
-      if (p.values.every((value) => value == true)) {
-        await _saveAndSchedule();
-      } else if (mounted) {
-        setState(() => status =
-            'Grant the permissions, then tap Check permissions.');
-      }
     } catch (e) {
-      if (mounted) setState(() => status = 'Error: $e');
+      if (mounted) setState(() => status = 'خطا در بررسی مجوزها: $e');
     }
   }
 
-  Future<void> _showPermissionDialog(String key, String method) async {
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Permission needed: $key'),
-        content: Text(
-          key == 'battery'
-              ? 'Set this app to Unrestricted in battery settings to improve background reliability.'
-              : key == 'dnd'
-                  ? 'Allow Do Not Disturb access for this app.'
-                  : 'Allow exact alarms for this app.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Later'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              await native.invokeMethod(method);
-            },
-            child: const Text('Open settings'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  DateTime _maghribFor(DateTime date, double latitude, double longitude) {
-    final params = CalculationMethod.muslim_world_league.getParameters();
-    params.madhab = Madhab.shafi;
-    final prayers = PrayerTimes(
-      Coordinates(latitude, longitude),
+  PrayerTimes _prayers(DateTime date, double latitude, double longitude, CalculationMethod method) {
+    final params = method.getParameters()..madhab = Madhab.shafi;
+    return PrayerTimes(
+      Coordinates(latitude, longitude, validate: true),
       DateComponents(date.year, date.month, date.day),
       params,
     );
-    return prayers.maghrib;
   }
 
-  Future<void> _saveAndSchedule() async {
-    final latitude = double.tryParse(lat.text.trim());
-    final longitude = double.tryParse(lon.text.trim());
-    if (latitude == null ||
-        longitude == null ||
-        latitude < -90 ||
-        latitude > 90 ||
-        longitude < -180 ||
-        longitude > 180) {
-      if (mounted) setState(() => status = 'Invalid latitude or longitude.');
-      return;
+  Future<void> _calculateAndSchedule() async {
+    if (busy) return;
+    busy = true;
+    try {
+      final latitude = double.tryParse(lat.text.trim());
+      final longitude = double.tryParse(lon.text.trim());
+      if (latitude == null || longitude == null || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+        throw const FormatException('مختصات جغرافیایی معتبر نیست.');
+      }
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('city', city.text.trim());
+      await prefs.setDouble('lat', latitude);
+      await prefs.setDouble('lon', longitude);
+
+      final now = DateTime.now();
+      final tehranToday = _prayers(now, latitude, longitude, CalculationMethod.tehran);
+      final sunsetToday = _prayers(now, latitude, longitude, CalculationMethod.muslim_world_league).maghrib;
+      final times = <int>[];
+      DateTime? nextMaghrib;
+      DateTime? nextSunset;
+
+      // Rolling one-year schedule. Native AlarmManager advances one day at a time,
+      // and restores the queue after reboot. Reopen the app yearly or after changing location.
+      for (var day = 0; day < 366; day++) {
+        final date = now.add(Duration(days: day));
+        final prayers = _prayers(date, latitude, longitude, CalculationMethod.tehran);
+        final prayerTime = prayers.maghrib;
+        if (prayerTime.isAfter(now)) {
+          times.add(prayerTime.millisecondsSinceEpoch);
+          nextMaghrib ??= prayerTime;
+          if (day == 0) nextSunset = sunsetToday;
+        }
+      }
+      if (times.isEmpty) throw StateError('زمان مغرب محاسبه نشد.');
+      final p = Map<String, dynamic>.from(await native.invokeMethod('permissions'));
+      if (p['dnd'] == true && p['exact'] == true) {
+        await native.invokeMethod('scheduleQueue', {'times': times});
+        if (mounted) setState(() {
+          maghrib = nextMaghrib;
+          sunset = nextSunset;
+          status = 'زمان‌بندی مغرب برای یک سال آینده ثبت شد. پس از تغییر مکان، دوباره ذخیره کنید.';
+        });
+      } else {
+        if (mounted) setState(() {
+          maghrib = nextMaghrib;
+          sunset = nextSunset;
+          status = 'برای زمان‌بندی خودکار، مجوزهای DND و هشدار دقیق را فعال کنید.';
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => status = 'خطا: $e');
+    } finally {
+      busy = false;
     }
+  }
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('city', city.text.trim());
-    await prefs.setDouble('lat', latitude);
-    await prefs.setDouble('lon', longitude);
-
-    final now = DateTime.now();
-    final today = _maghribFor(now, latitude, longitude);
-    final tomorrow =
-        _maghribFor(now.add(const Duration(days: 1)), latitude, longitude);
-    final dayAfter =
-        _maghribFor(now.add(const Duration(days: 2)), latitude, longitude);
-
-    final start =
-        today.add(const Duration(minutes: 30)).isAfter(now) ? today : tomorrow;
-    final next = start == today ? tomorrow : dayAfter;
-
-    await native.invokeMethod('schedule', {
-      'start': start.millisecondsSinceEpoch,
-      'next': next.millisecondsSinceEpoch,
-    });
-
-    if (mounted) {
-      setState(() {
-        maghrib = start;
-        status =
-            'Alarms scheduled. Keep automatic date/time and time zone enabled.';
-      });
-    }
+  String _clock(DateTime? value) {
+    if (value == null) return '—';
+    final t = value.toLocal();
+    return '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('Maghrib Silent 🌙')),
-        body: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            const Text(
-              'Location',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-            TextField(
-              controller: city,
-              decoration: const InputDecoration(
-                labelText: 'City / Country (label only)',
-              ),
-            ),
-            TextField(
-              controller: lat,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-                signed: true,
-              ),
-              decoration: const InputDecoration(labelText: 'Latitude'),
-            ),
-            TextField(
-              controller: lon,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-                signed: true,
-              ),
-              decoration: const InputDecoration(labelText: 'Longitude'),
-            ),
-            const SizedBox(height: 20),
-            FilledButton(
-              onPressed: _saveAndSchedule,
-              child: const Text('Save location and schedule'),
-            ),
-            OutlinedButton(
-              onPressed: () => _refresh(prompt: true),
-              child: const Text('Check permissions'),
-            ),
-            const SizedBox(height: 20),
-            Text('Next Maghrib: ${maghrib?.toLocal().toString() ?? "Not scheduled"}'),
-            const Text('Silent / DND duration: 30 minutes'),
-            const SizedBox(height: 12),
-            for (final key in ['battery', 'dnd', 'exact'])
-              ListTile(
-                title: Text('$key permission'),
-                trailing: Icon(
-                  permissions[key] == true
-                      ? Icons.check_circle
-                      : Icons.warning_amber,
-                  color: permissions[key] == true
-                      ? Colors.green
-                      : Colors.orange,
-                ),
-              ),
-            const SizedBox(height: 12),
-            Text(status),
-            const SizedBox(height: 20),
-            const Text(
-              'Note: City names are labels; enter coordinates for a new location. '
-              'The device time zone must match the selected location for accurate '
-              'local prayer-time calculation. Reopen the app periodically to refresh future dates.',
-            ),
-          ],
-        ),
-      );
+    appBar: AppBar(title: const Text('Maghrib Silent 🌙')),
+    body: ListView(padding: const EdgeInsets.all(20), children: [
+      const Text('مکان محاسبه', style: TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
+      TextField(controller: city, decoration: const InputDecoration(labelText: 'شهر / کشور (عنوان نمایشی)')),
+      TextField(controller: lat, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'عرض جغرافیایی')),
+      TextField(controller: lon, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'طول جغرافیایی')),
+      const SizedBox(height: 20),
+      FilledButton(onPressed: busy ? null : _calculateAndSchedule, child: const Text('ذخیره مکان و زمان‌بندی')),
+      OutlinedButton(onPressed: () async { await _checkPermissions(prompt: true); await _calculateAndSchedule(); }, child: const Text('بررسی مجوزها')),
+      const SizedBox(height: 20),
+      Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('غروب آفتاب: ${_clock(sunset)}'),
+        const SizedBox(height: 8),
+        Text('اذان مغرب: ${_clock(maghrib)}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        const Text('مدت سکوت: ۳۰ دقیقه'),
+        const Divider(),
+        const Text('روش محاسبه: مؤسسه ژئوفیزیک دانشگاه تهران (زاویه مغرب ۴٫۵ درجه زیر افق)'),
+      ]))),
+      for (final item in [('battery', 'بهینه‌سازی باتری'), ('dnd', 'دسترسی DND'), ('exact', 'هشدار دقیق')])
+        ListTile(title: Text(item.$2), trailing: Icon(
+          permissions[item.$1] == true ? Icons.check_circle : Icons.warning_amber,
+          color: permissions[item.$1] == true ? Colors.green : Colors.orange,
+        )),
+      Text(status),
+      const SizedBox(height: 12),
+      const Text('نکته: نام شهر فقط برچسب است و محاسبه بر اساس مختصات انجام می‌شود. منطقه زمانی گوشی باید با مکان انتخاب‌شده مطابقت داشته باشد. زمان اذان مغرب با غروب نجومی آفتاب یکسان نیست.'),
+    ]),
+  );
 }
