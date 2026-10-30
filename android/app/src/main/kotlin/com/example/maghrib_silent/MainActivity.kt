@@ -31,14 +31,18 @@ class MainActivity : FlutterActivity() {
                     }
                     "openExact" -> {
                         if (Build.VERSION.SDK_INT >= 31) startActivity(
-                            Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply { data = Uri.parse("package:$packageName") }
+                            Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                                data = Uri.parse("package:$packageName")
+                            }
                         )
                         result.success(null)
                     }
                     "openBattery" -> {
                         try { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
                         catch (_: Exception) {
-                            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply { data = Uri.parse("package:$packageName") })
+                            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.parse("package:$packageName")
+                            })
                         }
                         result.success(null)
                     }
@@ -47,6 +51,7 @@ class MainActivity : FlutterActivity() {
                         if (values.isNullOrEmpty()) result.error("QUEUE", "No Maghrib times supplied", null)
                         else { PrayerScheduler.setQueue(this, values); result.success(null) }
                     }
+                    "testDnd" -> result.success(PrayerScheduler.testNow(this))
                     else -> result.notImplemented()
                 }
             }
