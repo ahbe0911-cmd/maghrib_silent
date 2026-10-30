@@ -1,4 +1,5 @@
 import 'package:adhan/adhan.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -52,6 +53,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Map<String, dynamic> permissions = {};
   bool busy = false;
   bool testRunning = false;
+  bool gpsLoading = false;
 
   @override
   void initState() {
@@ -85,6 +87,39 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (mounted) setState(() {});
     await _checkPermissions(prompt: true);
     await _calculateAndSchedule();
+  }
+
+  Future<void> _useGps() async {
+    if (gpsLoading) return;
+    setState(() { gpsLoading = true; status = 'در حال دریافت موقعیت GPS...'; });
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        throw Exception('سرویس موقعیت مکانی گوشی خاموش است.');
+      }
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        throw Exception('دسترسی موقعیت مکانی داده نشده است.');
+      }
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+      if (!mounted) return;
+      setState(() {
+        selectedPlace = 'custom';
+        city.text = 'موقعیت فعلی GPS';
+        lat.text = pos.latitude.toStringAsFixed(6);
+        lon.text = pos.longitude.toStringAsFixed(6);
+      });
+      await _calculateAndSchedule();
+    } catch (e) {
+      if (mounted) setState(() => status = 'خطا در GPS: $e');
+    } finally {
+      if (mounted) setState(() => gpsLoading = false);
+    }
   }
 
   void _selectPlace(String? value) {
@@ -248,54 +283,127 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Maghrib Silent 🌙')),
-    body: ListView(padding: const EdgeInsets.all(20), children: [
-      const Text('مکان محاسبه', style: TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
-      DropdownButtonFormField<String>(
-        value: selectedPlace,
-        isExpanded: true,
-        decoration: const InputDecoration(labelText: 'انتخاب دستی شهر یا مختصات دلخواه'),
-        items: [
-          ...places.map((p) => DropdownMenuItem(value: p.name, child: Text(p.name))),
-          const DropdownMenuItem(value: 'custom', child: Text('مکان دلخواه / ورود مختصات')),
-        ],
-        onChanged: _selectPlace,
+  Widget build(BuildContext context) {
+    final h = MediaQuery.sizeOf(context).height;
+    final compact = h < 760;
+    final pad = compact ? 8.0 : 12.0;
+    return Scaffold(
+      appBar: AppBar(
+        toolbarHeight: compact ? 44 : 52,
+        title: const Text('سکوت اذان مغرب 🌙', style: TextStyle(fontSize: 19)),
+        centerTitle: true,
       ),
-      TextField(controller: city, decoration: const InputDecoration(labelText: 'نام شهر / کشور')),
-      TextField(controller: lat, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'عرض جغرافیایی')),
-      TextField(controller: lon, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'طول جغرافیایی')),
-      const SizedBox(height: 20),
-      FilledButton(onPressed: busy ? null : _calculateAndSchedule, child: const Text('ذخیره مکان و زمان‌بندی')),
-      OutlinedButton(onPressed: () async { await _checkPermissions(prompt: true); await _calculateAndSchedule(); }, child: const Text('بررسی مجوزها')),
-      const SizedBox(height: 12),
-      OutlinedButton.icon(
-        onPressed: testRunning ? null : _testSilence,
-        icon: const Icon(Icons.volume_off),
-        label: const Text('آزمایش سکوت و بازگشت صدا (۳۰ ثانیه)'),
+      body: SafeArea(
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 14, vertical: compact ? 3 : 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(children: [
+                const Expanded(child: Text('موقعیت مکانی', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold))),
+                TextButton.icon(
+                  onPressed: gpsLoading ? null : _useGps,
+                  icon: const Icon(Icons.my_location, size: 18),
+                  label: Text(gpsLoading ? 'دریافت...' : 'تشخیص خودکار GPS'),
+                ),
+              ]),
+              SizedBox(height: pad / 2),
+              SizedBox(height: 48, child: DropdownButtonFormField<String>(
+                value: selectedPlace,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'انتخاب شهر یا مختصات', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 5)),
+                items: [
+                  ...places.map((p) => DropdownMenuItem(value: p.name, child: Text(p.name))),
+                  const DropdownMenuItem(value: 'custom', child: Text('مکان دلخواه / GPS')),
+                ],
+                onChanged: _selectPlace,
+              )),
+              SizedBox(height: pad),
+              Row(children: [
+                Expanded(flex: 3, child: _field(city, 'شهر / کشور')),
+                const SizedBox(width: 6),
+                Expanded(flex: 2, child: _field(lat, 'عرض', numeric: true)),
+                const SizedBox(width: 6),
+                Expanded(flex: 2, child: _field(lon, 'طول', numeric: true)),
+              ]),
+              SizedBox(height: pad),
+              FilledButton(
+                onPressed: busy ? null : _calculateAndSchedule,
+                child: const Text('ذخیره مکان و زمان‌بندی'),
+              ),
+              Card(
+                margin: EdgeInsets.symmetric(vertical: pad / 2),
+                child: Padding(
+                  padding: EdgeInsets.all(compact ? 9 : 13),
+                  child: Column(children: [
+                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                      _timeItem('طلوع', _clock(sunrise)),
+                      _timeItem('غروب', _clock(sunset)),
+                      _timeItem('اذان مغرب', _clock(maghrib), highlight: true),
+                    ]),
+                    const SizedBox(height: 5),
+                    Text('فاصله غروب تا اذان: ${_gap()}     |     سکوت: ۳۰ دقیقه',
+                      textAlign: TextAlign.center, style: const TextStyle(fontSize: 12)),
+                  ]),
+                ),
+              ),
+              Row(children: [
+                Expanded(child: OutlinedButton.icon(
+                  onPressed: () async { await _checkPermissions(prompt: true); await _calculateAndSchedule(); },
+                  icon: const Icon(Icons.verified_user_outlined, size: 17),
+                  label: const Text('مجوزها', style: TextStyle(fontSize: 12)),
+                )),
+                const SizedBox(width: 6),
+                Expanded(flex: 2, child: OutlinedButton.icon(
+                  onPressed: testRunning ? null : _testSilence,
+                  icon: const Icon(Icons.volume_off, size: 17),
+                  label: const Text('آزمایش ۳۰ ثانیه‌ای', style: TextStyle(fontSize: 12)),
+                )),
+              ]),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+                _permission('باتری', 'battery'),
+                _permission('DND', 'dnd'),
+                _permission('آلارم دقیق', 'exact'),
+              ]),
+              Text(status, textAlign: TextAlign.center, maxLines: 2,
+                overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
+              if (!compact) const Spacer(),
+              const Text('روش محاسبه تهران: مغرب ۴٫۵ درجه زیر افق',
+                textAlign: TextAlign.center, style: TextStyle(fontSize: 10)),
+            ],
+          ),
+        ),
       ),
-      const SizedBox(height: 20),
-      Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('طلوع آفتاب: ${_clock(sunrise)}'),
-        const SizedBox(height: 8),
-        Text('غروب آفتاب: ${_clock(sunset)}'),
-        const SizedBox(height: 8),
-        Text('اذان مغرب: ${_clock(maghrib)}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        Text('فاصله غروب تا اذان مغرب: ${_gap()}'),
-        const SizedBox(height: 8),
-        const Text('مدت سکوت: ۳۰ دقیقه'),
-        const Divider(),
-        const Text('روش ایران: مؤسسه ژئوفیزیک دانشگاه تهران، زاویه مغرب ۴٫۵ درجه زیر افق.'),
-      ]))),
-      for (final item in [('battery', 'بهینه‌سازی باتری'), ('dnd', 'دسترسی DND'), ('exact', 'هشدار دقیق')])
-        ListTile(title: Text(item.$2), trailing: Icon(
-          permissions[item.$1] == true ? Icons.check_circle : Icons.warning_amber,
-          color: permissions[item.$1] == true ? Colors.green : Colors.orange,
-        )),
-      Text(status),
-      const SizedBox(height: 12),
-      const Text('برای شهرهای ایران از منطقه زمانی ایران استفاده کنید. برای مختصات خارج از منطقه زمانی گوشی، ساعت و منطقه زمانی دستگاه را نیز متناسب با محل انتخاب‌شده تنظیم کنید.'),
-    ]),
-  );
+    );
+  }
+
+  Widget _field(TextEditingController controller, String label, {bool numeric = false}) {
+    return SizedBox(height: 48, child: TextField(
+      controller: controller,
+      keyboardType: numeric ? const TextInputType.numberWithOptions(decimal: true, signed: true) : TextInputType.text,
+      style: const TextStyle(fontSize: 12),
+      decoration: InputDecoration(
+        labelText: label, labelStyle: const TextStyle(fontSize: 11),
+        border: const OutlineInputBorder(),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+      ),
+    ));
+  }
+
+  Widget _timeItem(String title, String time, {bool highlight = false}) {
+    return Column(children: [
+      Text(title, style: TextStyle(fontSize: 11, fontWeight: highlight ? FontWeight.bold : FontWeight.normal)),
+      Text(time, style: TextStyle(fontSize: highlight ? 23 : 17,
+        fontWeight: highlight ? FontWeight.bold : FontWeight.w500)),
+    ]);
+  }
+
+  Widget _permission(String label, String key) {
+    final ok = permissions[key] == true;
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Icon(ok ? Icons.check_circle : Icons.warning_amber, color: ok ? Colors.green : Colors.orange, size: 15),
+      const SizedBox(width: 3),
+      Text(label, style: const TextStyle(fontSize: 10)),
+    ]);
+  }
 }
