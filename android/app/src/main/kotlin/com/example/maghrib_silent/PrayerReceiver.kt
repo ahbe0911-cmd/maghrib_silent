@@ -7,8 +7,9 @@ import android.content.Intent
 class PrayerReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
-            "com.example.maghrib_silent.START" -> PrayerScheduler.onStart(context)
-            "com.example.maghrib_silent.END" -> PrayerScheduler.onEnd(context)
+            PrayerScheduler.START -> PrayerScheduler.onStart(context)
+            PrayerScheduler.END -> PrayerScheduler.onEnd(context)
+            PrayerScheduler.TEST_END -> PrayerScheduler.endTest(context)
         }
     }
 }
