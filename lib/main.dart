@@ -15,6 +15,13 @@ class MaghribApp extends StatelessWidget {
   );
 }
 
+class _Place {
+  final String name;
+  final double lat;
+  final double lon;
+  const _Place(this.name, this.lat, this.lon);
+}
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
   @override
@@ -23,14 +30,28 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   static const native = MethodChannel('maghrib_silent/native');
-  final city = TextEditingController(text: 'Minoudasht, Golestan, Iran');
+  static const places = <_Place>[
+    _Place('مینودشت، گلستان', 37.2289, 55.3725),
+    _Place('گرگان، گلستان', 36.8456, 54.4393),
+    _Place('ساری، مازندران', 36.5633, 53.0601),
+    _Place('تهران', 35.6892, 51.3890),
+    _Place('مشهد، خراسان رضوی', 36.2972, 59.6067),
+    _Place('اصفهان', 32.6546, 51.6680),
+    _Place('شیراز', 29.5918, 52.5837),
+    _Place('تبریز', 38.0962, 46.2738),
+  ];
+
+  final city = TextEditingController(text: 'مینودشت، گلستان');
   final lat = TextEditingController(text: '37.2289');
   final lon = TextEditingController(text: '55.3725');
+  String selectedPlace = 'مینودشت، گلستان';
   DateTime? maghrib;
   DateTime? sunset;
+  DateTime? sunrise;
   String status = 'در حال بررسی مجوزها...';
   Map<String, dynamic> permissions = {};
   bool busy = false;
+  bool testRunning = false;
 
   @override
   void initState() {
@@ -48,7 +69,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) { _checkPermissions(); _calculateAndSchedule(); }
+    if (state == AppLifecycleState.resumed) {
+      _checkPermissions();
+      _calculateAndSchedule();
+    }
   }
 
   Future<void> _initialize() async {
@@ -56,8 +80,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     city.text = p.getString('city') ?? city.text;
     lat.text = (p.getDouble('lat') ?? 37.2289).toString();
     lon.text = (p.getDouble('lon') ?? 55.3725).toString();
+    selectedPlace = p.getString('place') ?? 'custom';
+    if (!places.any((p) => p.name == selectedPlace)) selectedPlace = 'custom';
+    if (mounted) setState(() {});
     await _checkPermissions(prompt: true);
     await _calculateAndSchedule();
+  }
+
+  void _selectPlace(String? value) {
+    if (value == null) return;
+    setState(() {
+      selectedPlace = value;
+      if (value != 'custom') {
+        final place = places.firstWhere((p) => p.name == value);
+        city.text = '${place.name}، ایران';
+        lat.text = place.lat.toString();
+        lon.text = place.lon.toString();
+      } else {
+        city.text = '';
+        lat.text = '';
+        lon.text = '';
+      }
+    });
   }
 
   Future<void> _checkPermissions({bool prompt = false}) async {
@@ -72,7 +116,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ('exact', 'openExact', 'هشدار دقیق'),
         ]) {
           if (p[item.$1] != true) {
-            if (!mounted) return;
             await showDialog<void>(
               context: context,
               builder: (ctx) => AlertDialog(
@@ -116,25 +159,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('city', city.text.trim());
+      await prefs.setString('place', selectedPlace);
       await prefs.setDouble('lat', latitude);
       await prefs.setDouble('lon', longitude);
 
       final now = DateTime.now();
-      final tehranToday = _prayers(now, latitude, longitude, CalculationMethod.tehran);
       final times = <int>[];
       DateTime? nextMaghrib;
       DateTime? nextSunset;
+      DateTime? nextSunrise;
 
-      // Rolling one-year schedule. Native AlarmManager advances one day at a time,
-      // and restores the queue after reboot. Reopen the app yearly or after changing location.
+      // Tehran method: Maghrib is calculated when the Sun's centre is 4.5 degrees
+      // below the horizon. Sunrise/sunset are the apparent horizon crossing.
+      // Store a rolling year of exact local-device timestamps.
       for (var day = 0; day < 366; day++) {
         final date = now.add(Duration(days: day));
-        final prayers = _prayers(date, latitude, longitude, CalculationMethod.tehran);
-        final prayerTime = prayers.maghrib;
+        final iranMethod = _prayers(date, latitude, longitude, CalculationMethod.tehran);
+        final prayerTime = iranMethod.maghrib;
         if (prayerTime.isAfter(now)) {
           times.add(prayerTime.millisecondsSinceEpoch);
           if (nextMaghrib == null) {
             nextMaghrib = prayerTime;
+            nextSunrise = iranMethod.sunrise;
             nextSunset = _prayers(date, latitude, longitude, CalculationMethod.muslim_world_league).maghrib;
           }
         }
@@ -146,12 +192,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         if (mounted) setState(() {
           maghrib = nextMaghrib;
           sunset = nextSunset;
-          status = 'زمان‌بندی مغرب برای یک سال آینده ثبت شد. پس از تغییر مکان، دوباره ذخیره کنید.';
+          sunrise = nextSunrise;
+          status = 'زمان‌بندی اذان مغرب برای یک سال آینده ثبت شد.';
         });
       } else {
         if (mounted) setState(() {
           maghrib = nextMaghrib;
           sunset = nextSunset;
+          sunrise = nextSunrise;
           status = 'برای زمان‌بندی خودکار، مجوزهای DND و هشدار دقیق را فعال کنید.';
         });
       }
@@ -162,10 +210,41 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _testSilence() async {
+    try {
+      final ok = await native.invokeMethod<bool>('testDnd') ?? false;
+      if (!mounted) return;
+      setState(() {
+        testRunning = ok;
+        status = ok
+          ? 'آزمایش شروع شد: گوشی باید ۳۰ ثانیه ساکت بماند و سپس وضعیت قبلی برگردد.'
+          : 'آزمایش انجام نشد. دسترسی DND را بررسی کنید یا آزمایش قبلی هنوز فعال است.';
+      });
+      if (ok) {
+        await Future<void>.delayed(const Duration(seconds: 31));
+        if (mounted) {
+          setState(() {
+            testRunning = false;
+            status = 'آزمایش ۳۰ ثانیه‌ای تمام شد. وضعیت زنگ گوشی را بررسی کنید.';
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted) setState(() => status = 'خطا در آزمایش: $e');
+    }
+  }
+
   String _clock(DateTime? value) {
     if (value == null) return '—';
     final t = value.toLocal();
     return '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+  }
+
+  String _gap() {
+    if (sunset == null || maghrib == null) return '—';
+    final minutes = maghrib!.difference(sunset!).inMinutes;
+    if (minutes < 0) return '—';
+    return '$minutes دقیقه';
   }
 
   @override
@@ -173,21 +252,41 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     appBar: AppBar(title: const Text('Maghrib Silent 🌙')),
     body: ListView(padding: const EdgeInsets.all(20), children: [
       const Text('مکان محاسبه', style: TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
-      TextField(controller: city, decoration: const InputDecoration(labelText: 'شهر / کشور (عنوان نمایشی)')),
+      DropdownButtonFormField<String>(
+        value: selectedPlace,
+        isExpanded: true,
+        decoration: const InputDecoration(labelText: 'انتخاب دستی شهر یا مختصات دلخواه'),
+        items: [
+          ...places.map((p) => DropdownMenuItem(value: p.name, child: Text(p.name))),
+          const DropdownMenuItem(value: 'custom', child: Text('مکان دلخواه / ورود مختصات')),
+        ],
+        onChanged: _selectPlace,
+      ),
+      TextField(controller: city, decoration: const InputDecoration(labelText: 'نام شهر / کشور')),
       TextField(controller: lat, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'عرض جغرافیایی')),
       TextField(controller: lon, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'طول جغرافیایی')),
       const SizedBox(height: 20),
       FilledButton(onPressed: busy ? null : _calculateAndSchedule, child: const Text('ذخیره مکان و زمان‌بندی')),
       OutlinedButton(onPressed: () async { await _checkPermissions(prompt: true); await _calculateAndSchedule(); }, child: const Text('بررسی مجوزها')),
+      const SizedBox(height: 12),
+      OutlinedButton.icon(
+        onPressed: testRunning ? null : _testSilence,
+        icon: const Icon(Icons.volume_off),
+        label: const Text('آزمایش سکوت و بازگشت صدا (۳۰ ثانیه)'),
+      ),
       const SizedBox(height: 20),
       Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('طلوع آفتاب: ${_clock(sunrise)}'),
+        const SizedBox(height: 8),
         Text('غروب آفتاب: ${_clock(sunset)}'),
         const SizedBox(height: 8),
         Text('اذان مغرب: ${_clock(maghrib)}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
+        Text('فاصله غروب تا اذان مغرب: ${_gap()}'),
+        const SizedBox(height: 8),
         const Text('مدت سکوت: ۳۰ دقیقه'),
         const Divider(),
-        const Text('روش محاسبه: مؤسسه ژئوفیزیک دانشگاه تهران (زاویه مغرب ۴٫۵ درجه زیر افق)'),
+        const Text('روش ایران: مؤسسه ژئوفیزیک دانشگاه تهران، زاویه مغرب ۴٫۵ درجه زیر افق.'),
       ]))),
       for (final item in [('battery', 'بهینه‌سازی باتری'), ('dnd', 'دسترسی DND'), ('exact', 'هشدار دقیق')])
         ListTile(title: Text(item.$2), trailing: Icon(
@@ -196,7 +295,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         )),
       Text(status),
       const SizedBox(height: 12),
-      const Text('نکته: نام شهر فقط برچسب است و محاسبه بر اساس مختصات انجام می‌شود. منطقه زمانی گوشی باید با مکان انتخاب‌شده مطابقت داشته باشد. زمان اذان مغرب با غروب نجومی آفتاب یکسان نیست.'),
+      const Text('برای شهرهای ایران از منطقه زمانی ایران استفاده کنید. برای مختصات خارج از منطقه زمانی گوشی، ساعت و منطقه زمانی دستگاه را نیز متناسب با محل انتخاب‌شده تنظیم کنید.'),
     ]),
   );
 }
