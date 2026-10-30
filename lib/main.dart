@@ -48,7 +48,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _checkPermissions();
+    if (state == AppLifecycleState.resumed) { _checkPermissions(); _calculateAndSchedule(); }
   }
 
   Future<void> _initialize() async {
@@ -121,7 +121,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       final now = DateTime.now();
       final tehranToday = _prayers(now, latitude, longitude, CalculationMethod.tehran);
-      final sunsetToday = _prayers(now, latitude, longitude, CalculationMethod.muslim_world_league).maghrib;
       final times = <int>[];
       DateTime? nextMaghrib;
       DateTime? nextSunset;
@@ -134,8 +133,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         final prayerTime = prayers.maghrib;
         if (prayerTime.isAfter(now)) {
           times.add(prayerTime.millisecondsSinceEpoch);
-          nextMaghrib ??= prayerTime;
-          if (day == 0) nextSunset = sunsetToday;
+          if (nextMaghrib == null) {
+            nextMaghrib = prayerTime;
+            nextSunset = _prayers(date, latitude, longitude, CalculationMethod.muslim_world_league).maghrib;
+          }
         }
       }
       if (times.isEmpty) throw StateError('زمان مغرب محاسبه نشد.');
