@@ -1,0 +1,47 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # Generate the standard Flutter Android Gradle scaffold in a temporary
+      # directory, then copy it without overwriting our custom manifest/Kotlin.
+      - name: Generate Android build scaffold
+        run: |
+          flutter create --platforms=android --project-name maghrib_silent --org com.example /tmp/flutter_scaffold
+          mkdir -p /tmp/custom_android
+          cp android/app/src/main/AndroidManifest.xml /tmp/custom_android/AndroidManifest.xml
+          cp -R android/app/src/main/kotlin /tmp/custom_android/kotlin
+          cp -R /tmp/flutter_scaffold/android/. android/
+          cp /tmp/custom_android/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          rm -rf android/app/src/main/kotlin
+          cp -R /tmp/custom_android/kotlin android/app/src/main/kotlin
+
+      - name: Fetch packages
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maghrib-silent-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
