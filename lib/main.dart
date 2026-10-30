@@ -139,6 +139,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
   }
 
+  Future<void> _openPermission(String key) async {
+    final method = {'battery': 'openBattery', 'dnd': 'openDnd', 'exact': 'openExact'}[key];
+    if (method == null) return;
+    try {
+      final opened = await native.invokeMethod<bool>(method) ?? false;
+      if (!opened && mounted) setState(() => status = 'تنظیمات این مجوز در گوشی باز نشد. از بخش تنظیمات برنامه به صورت دستی وارد شوید.');
+    } catch (e) {
+      if (mounted) setState(() => status = 'خطا در باز کردن تنظیمات: $e');
+    }
+  }
+
   Future<void> _checkPermissions({bool prompt = false}) async {
     try {
       final p = Map<String, dynamic>.from(await native.invokeMethod('permissions'));
@@ -160,7 +171,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('بعداً')),
                   FilledButton(onPressed: () async {
                     Navigator.pop(ctx);
-                    await native.invokeMethod(item.$2);
+                    await _openPermission(item.$1);
                   }, child: const Text('باز کردن تنظیمات')),
                 ],
               ),
@@ -252,15 +263,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       setState(() {
         testRunning = ok;
         status = ok
-          ? 'آزمایش شروع شد: گوشی باید ۳۰ ثانیه ساکت بماند و سپس وضعیت قبلی برگردد.'
+          ? 'آزمایش شروع شد: گوشی باید ۱۵ ثانیه ساکت بماند و سپس وضعیت قبلی برگردد.'
           : 'آزمایش انجام نشد. دسترسی DND را بررسی کنید یا آزمایش قبلی هنوز فعال است.';
       });
       if (ok) {
-        await Future<void>.delayed(const Duration(seconds: 31));
+        await Future<void>.delayed(const Duration(seconds: 16));
         if (mounted) {
           setState(() {
             testRunning = false;
-            status = 'آزمایش ۳۰ ثانیه‌ای تمام شد. وضعیت زنگ گوشی را بررسی کنید.';
+            status = 'آزمایش ۱۵ ثانیه‌ای تمام شد. وضعیت زنگ گوشی را بررسی کنید.';
           });
         }
       }
@@ -357,7 +368,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 Expanded(flex: 2, child: OutlinedButton.icon(
                   onPressed: testRunning ? null : _testSilence,
                   icon: const Icon(Icons.volume_off, size: 17),
-                  label: const Text('آزمایش ۳۰ ثانیه‌ای', style: TextStyle(fontSize: 12)),
+                  label: const Text('آزمایش ۱۵ ثانیه‌ای', style: TextStyle(fontSize: 12)),
                 )),
               ]),
               Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
@@ -400,10 +411,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _permission(String label, String key) {
     final ok = permissions[key] == true;
-    return Row(mainAxisSize: MainAxisSize.min, children: [
+    return InkWell(onTap: () => _openPermission(key), child: Row(mainAxisSize: MainAxisSize.min, children: [
       Icon(ok ? Icons.check_circle : Icons.warning_amber, color: ok ? Colors.green : Colors.orange, size: 15),
       const SizedBox(width: 3),
       Text(label, style: const TextStyle(fontSize: 10)),
-    ]);
+    ]));
   }
 }
